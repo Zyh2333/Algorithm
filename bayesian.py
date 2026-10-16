@@ -19,6 +19,8 @@ class Condition:
     def __init__(self, node_id, value):
         self.node_id = node_id
         self.value = value
+    def __eq__(self, other):
+        return self.node_id == other.node_id and self.value == other.value
 def combinations(pools, depth, current=None, cb=[], allow_similar=True):
     if current is None:
         current = []
@@ -270,6 +272,8 @@ class Bayesian:
         # unmatched_nodes_candidates = []
         for event_node in events_nodes:
             for condition_node in condition_nodes:
+                if event_node == condition_node:
+                    continue
                 if_found = False
                 visited = []
                 targets = self.edges[condition_node]
@@ -391,11 +395,91 @@ class Bayesian:
                 temp_conditions = conditions + [events_map[p] for p in parents]
                 temp_events = [events_map[child]]
                 current_value *= self.calculate_posterior_probability(temp_events, temp_conditions)
-                current_value *= self.calculate_posterior_probability(temp_conditions, conditions)
+                # current_value *= self.calculate_posterior_probability(temp_conditions, conditions)
         else:
             current_value *= self.calculate_events_conditions_probability(events, conditions, unmatched_nodes)
         return current_value
 
+
+    def calculate_pre_posterior_probability(self, events: list[Condition], conditions: list[Condition]):
+            # 1. 递归找到events: list[Condition], conditions: list[Condition]和unmatched_nodes，如果events之间有直接关联，则把events父级合并到condition，没有关联则视为独立并分别计算之后相乘
+            unmatched_nodes = []
+            events_nodes = []
+            condition_nodes = []
+            all_nodes = []
+            variable_values = {}
+            for event in events:
+                all_nodes.append(event.node_id)
+                # matched_nodes.append(event.node_id)
+                events_nodes.append(event.node_id)
+                variable_values[event.node_id] = event.value
+            # for event_node in events_nodes:
+            #     for target in self.edges[event_node]:
+            #         if target in events_nodes:
+            #             condition_nodes.append(event_node)
+            # events_nodes = [event_node for event_node in events_nodes if event_node not in condition_nodes]
+            for condition in conditions:
+                all_nodes.append(condition.node_id)
+                # matched_nodes.append(condition.node_id)
+                condition_nodes.append(condition.node_id)
+                variable_values[condition.node_id] = condition.value
+    
+            for event_node in events_nodes:
+                for edge_source in self.edges:
+                    if edge_source in condition_nodes:
+                        continue
+                    if event_node in self.edges[edge_source] and edge_source not in unmatched_nodes and edge_source not in all_nodes:
+                        unmatched_nodes.append(edge_source) 
+                        all_nodes.append(edge_source)
+            for condition_node in condition_nodes:
+                for edge_source in self.edges:
+                    if condition_node in self.edges[edge_source] and edge_source not in unmatched_nodes and edge_source not in all_nodes:
+                        unmatched_nodes.append(edge_source) 
+                        all_nodes.append(edge_source)
+            all_nodes = set(all_nodes)
+    
+        
+            # for all_node in all_nodes:
+            #     for edge_source in self.edges:
+            #         if all_node in self.edges[edge_source] and edge_source not in all_nodes:
+            #             all_nodes.append(edge_source)
+            # 隐藏变量
+            # unmatched_nodes = [node for node in all_nodes if node not in matched_nodes]
+            # 1. 判断条件和事件之间是什么关系，能不能直接通过cpt获取，还是需要通过贝叶斯公式转化
+            # matched_ec_nodes = {}
+            # unmatched_ec_nodes = []
+            # for c_node in condition_nodes:
+            #     if_found = False
+            #     for e_node in events_nodes:
+            #         if e_node in self.edges[c_node]:
+            #             if_found = True
+            #             if e_node not in matched_ec_nodes:
+            #                 matched_ec_nodes[e_node] = []
+            #             matched_ec_nodes[e_node].append(c_node)
+            #     if not if_found:
+            #         unmatched_ec_nodes.append(c_node)
+    
+            # 公式转换： event不能是condition或者unmatched_nodes的source
+            # TODO 不止是直接依赖交换，上下游多跳都要交换，并且把缺失的设置为unmatched
+            event_change = {}
+            for event_node in events_nodes:
+                for condition in condition_nodes:
+                    if condition in self.edges[event_node]:
+                        # event是source，说明要和condition交换
+                        if event_node not in event_change:
+                            event_change[event_node] = []
+                        event_change[event_node].append(condition)
+    
+            event_change, _, condition_nodes = self.get_exchange_unmatched_nodes(events_nodes, condition_nodes)
+            if len(event_change) > 0:
+                return self.calculate_posterior_probability(events, conditions)
+            else:
+                if conditions == events:
+                    return 1
+                if len(conditions) > 0:
+                    return self.calculate_posterior_probability(events, conditions) / self.calculate_posterior_probability(conditions, [])
+
+    # TODO 现在有交换是条件概率，不交换是联合概率
     def calculate_posterior_probability(self, events: list[Condition], conditions: list[Condition]):
         # 1. 递归找到events: list[Condition], conditions: list[Condition]和unmatched_nodes，如果events之间有直接关联，则把events父级合并到condition，没有关联则视为独立并分别计算之后相乘
         unmatched_nodes = []
@@ -482,11 +566,21 @@ class Bayesian:
         denominator_unmatched_nodes = [n for n in unmatched_nodes]
         denominator_conditions = [c for c in condition_nodes]
         denominator_events = []
-        for event in event_change:
-            denominator_unmatched_nodes.append(event)
-            for origin_condition in event_change[event]:
-                denominator_conditions.remove(origin_condition)
-                denominator_events.append(origin_condition)
+        if len(event_change) > 0:
+            for event in event_change:
+                denominator_unmatched_nodes.append(event)
+                for origin_condition in event_change[event]:
+                    denominator_conditions.remove(origin_condition)
+                    denominator_events.append(origin_condition)
+        # else:
+        #     denominator_events = []
+        #     denominator_conditions = []
+        #     denominator_unmatched_nodes = []
+        #     if len(conditions) > 0:
+        #         denominator_events = molecular_conditions
+        #         denominator_conditions = molecular_conditions
+        #         denominator_unmatched_nodes = molecular_unmatched_nodes
+
 
         # TODO 待验证完整流程及单个CPT取值是否正确
         # 2. 根据有向图拆成CPT，当events有多个的时候，原则是：1. 当events之间没有依赖，则可以直接分拆并相乘，2.当events之间有依赖，则需要把source保留到target event的condition中
@@ -568,15 +662,15 @@ if __name__ == "__main__":
     conditionB = Condition(nodeB.id, 0)
     print(bayesian.calculate_posterior_probability([eventC], [conditionA, conditionB]))
 
-    # 下面的节点按“子节点在前、父节点在后”的顺序加入网络。
-    # 每组都给出根据 CPT 独立计算的预期值，便于定位尚未支持的推理结构。
+    # # 下面的节点按“子节点在前、父节点在后”的顺序加入网络。
+    # # 每组都给出根据 CPT 独立计算的预期值，便于定位尚未支持的推理结构。
     def run_case(name, nodes, edge_pairs, events, conditions, expected):
         network = Bayesian()
         for node in nodes:
             outgoing = [Edge(source, target) for source, target in edge_pairs if source == node.id]
             network.add_node(node, outgoing)
         try:
-            actual = network.calculate_posterior_probability(
+            actual = network.calculate_pre_posterior_probability(
                 [Condition(node_id, value) for node_id, value in events],
                 [Condition(node_id, value) for node_id, value in conditions],
             )
@@ -587,77 +681,77 @@ if __name__ == "__main__":
             traceback.print_exc()
             print(f"{name}: 报错 {type(exc).__name__}: {exc}，预期={expected:.12f}")
 
-    # 2 节点链：X -> Y；反向推理 P(X=1 | Y=1)。
-    # 预期：(0.3 * 0.8) / (0.3 * 0.8 + 0.7 * 0.2) = 12/19。
-    # run_case(
-    #     "2 节点链",
-    #     [
-    #         Node("Y", ["X"], [0, 1], {
-    #             ("X=0",): {0: 0.8, 1: 0.2},
-    #             ("X=1",): {0: 0.2, 1: 0.8},
-    #         }, TypeEnum.NORMAL),
-    #         Node("X", [], [0, 1], {("X",): {0: 0.7, 1: 0.3}}, TypeEnum.ROOT),
-    #     ],
-    #     [("X", "Y")], [("X", 1)], [("Y", 1)], 12 / 19,
-    # )
+    # # 2 节点链：X -> Y；反向推理 P(X=1 | Y=1)。
+    # # 预期：(0.3 * 0.8) / (0.3 * 0.8 + 0.7 * 0.2) = 12/19。
+    run_case(
+        "2 节点链",
+        [
+            Node("Y", ["X"], [0, 1], {
+                ("X=0",): {0: 0.8, 1: 0.2},
+                ("X=1",): {0: 0.2, 1: 0.8},
+            }, TypeEnum.NORMAL),
+            Node("X", [], [0, 1], {("X",): {0: 0.7, 1: 0.3}}, TypeEnum.ROOT),
+        ],
+        [("X", "Y")], [("X", 1)], [("Y", 1)], 12 / 19,
+    )
 
-    # # 3 节点分叉：R -> S、R -> T；两项观测共同指向根节点。
-    # # 预期：(0.4 * 0.8 * 0.3) / (0.4 * 0.8 * 0.3 + 0.6 * 0.1 * 0.9) = 0.64。
-    # run_case(
-    #     "3 节点分叉",
-    #     [
-    #         Node("S", ["R"], [0, 1], {
-    #             ("R=0",): {0: 0.9, 1: 0.1},
-    #             ("R=1",): {0: 0.2, 1: 0.8},
-    #         }, TypeEnum.NORMAL),
-    #         Node("T", ["R"], [0, 1], {
-    #             ("R=0",): {0: 0.9, 1: 0.1},
-    #             ("R=1",): {0: 0.3, 1: 0.7},
-    #         }, TypeEnum.NORMAL),
-    #         Node("R", [], [0, 1], {("R",): {0: 0.6, 1: 0.4}}, TypeEnum.ROOT),
-    #     ],
-    #     [("R", "S"), ("R", "T")], [("R", 1)], [("S", 1), ("T", 0)], 0.64,
-    # )
+    # # # 3 节点分叉：R -> S、R -> T；两项观测共同指向根节点。
+    # # # 预期：(0.4 * 0.8 * 0.3) / (0.4 * 0.8 * 0.3 + 0.6 * 0.1 * 0.9) = 0.64。
+    run_case(
+        "3 节点分叉",
+        [
+            Node("S", ["R"], [0, 1], {
+                ("R=0",): {0: 0.9, 1: 0.1},
+                ("R=1",): {0: 0.2, 1: 0.8},
+            }, TypeEnum.NORMAL),
+            Node("T", ["R"], [0, 1], {
+                ("R=0",): {0: 0.9, 1: 0.1},
+                ("R=1",): {0: 0.3, 1: 0.7},
+            }, TypeEnum.NORMAL),
+            Node("R", [], [0, 1], {("R",): {0: 0.6, 1: 0.4}}, TypeEnum.ROOT),
+        ],
+        [("R", "S"), ("R", "T")], [("R", 1)], [("S", 1), ("T", 0)], 0.64,
+    )
 
-    # 3 节点链：R -> M -> L；中间节点 M 未观测，需要边缘化。
-    # 预期：0.35*(0.7*0.9+0.3*0.1) / [前项+0.65*(0.2*0.9+0.8*0.1)] = 0.5775。
-    # run_case(
-    #     "3 节点链（隐藏中间节点）",
-    #     [
-    #         Node("L", ["M"], [0, 1], {
-    #             ("M=0",): {0: 0.9, 1: 0.1},
-    #             ("M=1",): {0: 0.1, 1: 0.9},
-    #         }, TypeEnum.NORMAL),
-    #         Node("M", ["R"], [0, 1], {
-    #             ("R=0",): {0: 0.8, 1: 0.2},
-    #             ("R=1",): {0: 0.3, 1: 0.7},
-    #         }, TypeEnum.NORMAL),
-    #         Node("R", [], [0, 1], {("R",): {0: 0.65, 1: 0.35}}, TypeEnum.ROOT),
-    #     ],
-    #     [("R", "M"), ("M", "L")], [("R", 1)], [("L", 1)], 0.5775,
-    # )
+    # # 3 节点链：R -> M -> L；中间节点 M 未观测，需要边缘化。
+    # # 预期：0.35*(0.7*0.9+0.3*0.1) / [前项+0.65*(0.2*0.9+0.8*0.1)] = 0.5775。
+    run_case(
+        "3 节点链（隐藏中间节点）",
+        [
+            Node("L", ["M"], [0, 1], {
+                ("M=0",): {0: 0.9, 1: 0.1},
+                ("M=1",): {0: 0.1, 1: 0.9},
+            }, TypeEnum.NORMAL),
+            Node("M", ["R"], [0, 1], {
+                ("R=0",): {0: 0.8, 1: 0.2},
+                ("R=1",): {0: 0.3, 1: 0.7},
+            }, TypeEnum.NORMAL),
+            Node("R", [], [0, 1], {("R",): {0: 0.65, 1: 0.35}}, TypeEnum.ROOT),
+        ],
+        [("R", "M"), ("M", "L")], [("R", 1)], [("L", 1)], 0.5775,
+    )
 
-    # 4 节点汇聚再延伸：U -> M <- V，M -> Q；正向推理 P(Q=1 | U=1)。
-    # 预期：0.7*(0.5*0.9+0.5*0.2) + 0.3*(0.9*0.9+0.1*0.2) = 0.634。
-    # run_case(
-    #     "4 节点汇聚与延伸",
-    #     [
-    #         Node("Q", ["M"], [0, 1], {
-    #             ("M=0",): {0: 0.8, 1: 0.2},
-    #             ("M=1",): {0: 0.1, 1: 0.9},
-    #         }, TypeEnum.NORMAL),
-    #         Node("M", ["U", "V"], [0, 1], {
-    #             ("U=0", "V=0"): {0: 0.95, 1: 0.05},
-    #             ("U=0", "V=1"): {0: 0.6, 1: 0.4},
-    #             ("U=1", "V=0"): {0: 0.5, 1: 0.5},
-    #             ("U=1", "V=1"): {0: 0.1, 1: 0.9},
-    #         }, TypeEnum.NORMAL),
-    #         Node("U", [], [0, 1], {("U",): {0: 0.8, 1: 0.2}}, TypeEnum.ROOT),
-    #         Node("V", [], [0, 1], {("V",): {0: 0.7, 1: 0.3}}, TypeEnum.ROOT),
-    #     ],
-    #     [("U", "M"), ("V", "M"), ("M", "Q")],
-    #     [("Q", 1)], [("U", 1)], 0.634,
-    # )
+    # # 4 节点汇聚再延伸：U -> M <- V，M -> Q；正向推理 P(Q=1 | U=1)。
+    # # 预期：0.7*(0.5*0.9+0.5*0.2) + 0.3*(0.9*0.9+0.1*0.2) = 0.634。
+    run_case(
+        "4 节点汇聚与延伸",
+        [
+            Node("Q", ["M"], [0, 1], {
+                ("M=0",): {0: 0.8, 1: 0.2},
+                ("M=1",): {0: 0.1, 1: 0.9},
+            }, TypeEnum.NORMAL),
+            Node("M", ["U", "V"], [0, 1], {
+                ("U=0", "V=0"): {0: 0.95, 1: 0.05},
+                ("U=0", "V=1"): {0: 0.6, 1: 0.4},
+                ("U=1", "V=0"): {0: 0.5, 1: 0.5},
+                ("U=1", "V=1"): {0: 0.1, 1: 0.9},
+            }, TypeEnum.NORMAL),
+            Node("U", [], [0, 1], {("U",): {0: 0.8, 1: 0.2}}, TypeEnum.ROOT),
+            Node("V", [], [0, 1], {("V",): {0: 0.7, 1: 0.3}}, TypeEnum.ROOT),
+        ],
+        [("U", "M"), ("V", "M"), ("M", "Q")],
+        [("Q", 1)], [("U", 1)], 0.634,
+    )
 
     # 自条件恒等式：只含一个根节点时，P(X=x | X=x) 必须等于 1。
     # 这能单独检查“同一节点同时出现在事件和条件中”的处理。
