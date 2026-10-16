@@ -192,13 +192,49 @@ class Bayesian:
                 #     return node_value * f(nodes)
 
                 nodes_events = []
+                conditions_nodes = [c.node_id for c in conditions]
                 for node in nodes:
+                    # if node not in conditions_nodes:
                     node_event = Condition(node, nodes_value[node])
                     nodes_events.append(node_event)
                 # 子父级传递conditions，判断conditions是否需要保留，若为events的有效限制，则需要保留
-                p_conditions = [c for c in conditions if c.node_id not in nodes]
-                # p_conditions = [c for c in conditions]
-                event_value = event_value * self.calculate_posterior_probability(nodes_events, conditions=p_conditions)
+                # p_conditions = [c for c in conditions if c.node_id not in nodes]
+                events_pools = [nodes, [c.node_id for c in conditions]]
+                events_conditions_cb = []
+                p_cs = []
+                combinations(events_pools, 0, None, events_conditions_cb, False)
+                cb_pair = []
+                for ec_cb in events_conditions_cb:
+                    if sorted(ec_cb) in cb_pair:
+                        continue
+                    cb_pair.append(sorted(ec_cb))
+                    e = ec_cb[0]
+                    c = ec_cb[1]
+
+                    def if_dependency(a, b):
+                        if_found = False
+                        visited = []
+                        targets = self.edges[b]
+                        targets = [t for t in targets if t not in visited]
+                        queue = []
+                        if targets:
+                            queue.extend(targets)
+                            visited.extend(targets)
+                        while len(queue) > 0:
+                            target = queue.pop()
+                            visited.append(target)
+                            if target == a:
+                                if_found = True
+                                break
+                            targets = self.edges[target]
+                            targets = [t for t in targets if t not in visited]
+                            queue.extend(targets)
+                        # 交换，同时events之间非父子关系（A与B B与A均无父子关系）则A和B都不用交换，且不能作为条件，有父子关系则交换父作为条件
+                        return if_found
+    
+                    if if_dependency(e, c) or if_dependency(c, e):
+                        p_cs.append(c)
+                event_value = event_value * self.calculate_posterior_probability(nodes_events, conditions=[c for c in conditions if c.node_id in p_cs])
                 value_sum += event_value
                 # for cpt_key in cpt_event_map:
                 #     nodes_value = {condition_pair.split("=")[0]: int(condition_pair.split("=")[1]) for condition_pair in cpt_key if condition_pair.split("=")[0] in self.nodes}
@@ -256,9 +292,60 @@ class Bayesian:
                     event_change[event_node].append(condition_node)
                 unmatched_nodes.extend([n for n in visited if n not in all_nodes])
 
+        # for k,vs in event_change.items():
+        #     events_pools = [[k], vs]
+        #     events_cb = []
+        #     events_allows = []
+        #     combinations(events_pools, 0, None, events_cb, False)
+        #     cb_pair = []
+        #     for event_cb in events_cb:
+        #         if sorted(event_cb) in cb_pair:
+        #             continue
+        #         cb_pair.append(sorted(event_cb))
+        #         a = event_cb[0]
+        #         b = event_cb[1]
+
+        #         def if_dependency(a, b):
+        #             if_found = False
+        #             visited = []
+        #             targets = self.edges[b]
+        #             targets = [t for t in targets if t not in visited]
+        #             if targets:
+        #                 queue.extend(targets)
+        #                 visited.extend(targets)
+        #             while len(queue) > 0:
+        #                 target = queue.pop()
+        #                 if target == a:
+        #                     if_found = True
+        #                     break
+        #                 targets = self.edges[target]
+        #                 targets = [t for t in targets if t not in visited]
+        #                 queue.extend(targets)
+        #             # 交换，同时events之间非父子关系（A与B B与A均无父子关系）则A和B都不用交换，且不能作为条件，有父子关系则交换父作为条件
+        #             return if_found
+
+        #         if if_dependency(a, b):
+        #             events_allows.append(b)
+        #         if if_dependency(b, a):
+        #             events_allows.append(a)
+
+        # unmatched_nodes = list(set(unmatched_nodes))
+        # event_change_allow = {}
+        # for k,vs in event_change.items():
+        #     if k in events_allows:
+        #         event_change_allow[k] = vs
+            # else:
+            #     if k in condition_nodes and k in events_nodes:
+            #         condition_nodes.remove(k)
+        return event_change, unmatched_nodes, condition_nodes
+
+    def calculate_splits(self, events: list[Condition], conditions: list[Condition], unmatched_nodes):
+        # TODO events需要拆的情况
+        events_nodes = [e.node_id for e in events]
+        events_map = {e.node_id: e for e in events}
         events_pools = [events_nodes, events_nodes]
         events_cb = []
-        events_allows = []
+        events_splits = {}
         combinations(events_pools, 0, None, events_cb, False)
         cb_pair = []
         for event_cb in events_cb:
@@ -267,7 +354,7 @@ class Bayesian:
             cb_pair.append(sorted(event_cb))
             a = event_cb[0]
             b = event_cb[1]
-
+            queue = []
             def if_dependency(a, b):
                 if_found = False
                 visited = []
@@ -276,29 +363,38 @@ class Bayesian:
                 if targets:
                     queue.extend(targets)
                     visited.extend(targets)
-                while len(targets) > 0:
-                    target = targets.pop()
+                while len(queue) > 0:
+                    target = queue.pop()
+                    visited.append(target)
                     if target == a:
                         if_found = True
                         break
                     targets = self.edges[target]
                     targets = [t for t in targets if t not in visited]
                     queue.extend(targets)
-                # 交换，同时events之间非父子关系（A与B B与A均无父子关系）则A和B都不用交换，有父子关系则交换父
+                # 交换，同时events之间非父子关系（A与B B与A均无父子关系）则A和B都不用交换，且不能作为条件，有父子关系则交换父作为条件
                 return if_found
 
             if if_dependency(a, b):
-                events_allows.append(b)
+                if a not in events_splits:
+                    events_splits[a] = []
+                events_splits[a].append(b)
             if if_dependency(b, a):
-                events_allows.append(a)
+                if b not in events_splits:
+                    events_splits[b] = []
+                events_splits[b].append(a)
 
-        unmatched_nodes = list(set(unmatched_nodes))
-        event_change_allow = {}
-        for k,vs in event_change.items():
-            # if k in events_allows and k in events_nodes and k in condition_nodes:
-            if k in events_allows:
-                event_change_allow[k] = vs
-        return event_change_allow, unmatched_nodes
+        current_value = 1
+        if len(list(events_splits.keys())) > 0:
+            # 拆
+            for child, parents in events_splits.items():
+                temp_conditions = conditions + [events_map[p] for p in parents]
+                temp_events = [events_map[child]]
+                current_value *= self.calculate_posterior_probability(temp_events, temp_conditions)
+                current_value *= self.calculate_posterior_probability(temp_conditions, conditions)
+        else:
+            current_value *= self.calculate_events_conditions_probability(events, conditions, unmatched_nodes)
+        return current_value
 
     def calculate_posterior_probability(self, events: list[Condition], conditions: list[Condition]):
         # 1. 递归找到events: list[Condition], conditions: list[Condition]和unmatched_nodes，如果events之间有直接关联，则把events父级合并到condition，没有关联则视为独立并分别计算之后相乘
@@ -337,9 +433,7 @@ class Bayesian:
                     all_nodes.append(edge_source)
         all_nodes = set(all_nodes)
 
-
-        
-
+    
         # for all_node in all_nodes:
         #     for edge_source in self.edges:
         #         if all_node in self.edges[edge_source] and edge_source not in all_nodes:
@@ -371,8 +465,8 @@ class Bayesian:
                         event_change[event_node] = []
                     event_change[event_node].append(condition)
 
-        events_nodes = [e for e in events_nodes if e not in condition_nodes and e not in unmatched_nodes]
-        event_change, _ = self.get_exchange_unmatched_nodes(events_nodes, condition_nodes)
+        event_change, _, condition_nodes = self.get_exchange_unmatched_nodes(events_nodes, condition_nodes)
+        # events_nodes = [e for e in events_nodes if e not in condition_nodes and e not in unmatched_nodes]
         
         # 有交换的，那么就需要把分子转换成
         molecular_unmatched_nodes = [n for n in unmatched_nodes]
@@ -399,16 +493,16 @@ class Bayesian:
                 #2.1 for循环调用event 进calculate_nodes_probability，并累乘
                 #2.2 先处理condition，再进calculate_nodes_probability，并累乘
         # 先处理分子
-        for event_node in molecular_events:
-            for target in self.edges[event_node]:
-                if target in molecular_events:
-                    molecular_conditions.append(event_node)
-                    molecular_conditions = list(set(molecular_conditions))
+        # for event_node in molecular_events:
+        #     for target in self.edges[event_node]:
+        #         if target in molecular_events:
+        #             molecular_conditions.append(event_node)
+        #             molecular_conditions = list(set(molecular_conditions))
         molecular_events = [me for me in molecular_events if me not in molecular_conditions and me not in molecular_unmatched_nodes]
         # 处理当层CPT
         molecular_value = 1
         if len(molecular_events) > 0:
-            molecular_value = self.calculate_events_conditions_probability([Condition(c, variable_values[c]) for c in molecular_events],[Condition(c, variable_values[c]) for c in molecular_conditions], molecular_unmatched_nodes)
+            molecular_value = self.calculate_splits([Condition(c, variable_values[c]) for c in molecular_events],[Condition(c, variable_values[c]) for c in molecular_conditions], molecular_unmatched_nodes)
         # for event_node in molecular_events:
         #     molecular_value *= self.calculate_event_conditions_probability(Condition(event_node, variable_values[event_node]), [Condition(c, variable_values[c]) for c in molecular_conditions], molecular_unmatched_nodes)
         # 递归处理父级
@@ -419,11 +513,11 @@ class Bayesian:
         #     )
         
         # 再处理分母
-        for event_node in denominator_events:
-            for target in self.edges[event_node]:
-                if target in denominator_events:
-                    denominator_conditions.append(event_node)
-                    denominator_conditions = list(set(denominator_conditions))
+        # for event_node in denominator_events:
+        #     for target in self.edges[event_node]:
+        #         if target in denominator_events:
+        #             denominator_conditions.append(event_node)
+        #             denominator_conditions = list(set(denominator_conditions))
 
         # 处理当层CPT
         denominator_value = 1
@@ -431,7 +525,7 @@ class Bayesian:
         if len(denominator_events) > 0:
             # for event_node in denominator_events:
             #     denominator_value *= self.calculate_event_conditions_probability(Condition(event_node, variable_values[event_node]), [Condition(c, variable_values[c]) for c in denominator_conditions], denominator_unmatched_nodes)
-            denominator_value = self.calculate_events_conditions_probability([Condition(c, variable_values[c]) for c in denominator_events],[Condition(c, variable_values[c]) for c in denominator_conditions], denominator_unmatched_nodes)
+            denominator_value = self.calculate_splits([Condition(c, variable_values[c]) for c in denominator_events],[Condition(c, variable_values[c]) for c in denominator_conditions], denominator_unmatched_nodes)
 
         # 递归处理父级
         # father_denominator_events = denominator_conditions
@@ -545,22 +639,33 @@ if __name__ == "__main__":
 
     # 4 节点汇聚再延伸：U -> M <- V，M -> Q；正向推理 P(Q=1 | U=1)。
     # 预期：0.7*(0.5*0.9+0.5*0.2) + 0.3*(0.9*0.9+0.1*0.2) = 0.634。
-    run_case(
-        "4 节点汇聚与延伸",
-        [
-            Node("Q", ["M"], [0, 1], {
-                ("M=0",): {0: 0.8, 1: 0.2},
-                ("M=1",): {0: 0.1, 1: 0.9},
-            }, TypeEnum.NORMAL),
-            Node("M", ["U", "V"], [0, 1], {
-                ("U=0", "V=0"): {0: 0.95, 1: 0.05},
-                ("U=0", "V=1"): {0: 0.6, 1: 0.4},
-                ("U=1", "V=0"): {0: 0.5, 1: 0.5},
-                ("U=1", "V=1"): {0: 0.1, 1: 0.9},
-            }, TypeEnum.NORMAL),
-            Node("U", [], [0, 1], {("U",): {0: 0.8, 1: 0.2}}, TypeEnum.ROOT),
-            Node("V", [], [0, 1], {("V",): {0: 0.7, 1: 0.3}}, TypeEnum.ROOT),
-        ],
-        [("U", "M"), ("V", "M"), ("M", "Q")],
-        [("Q", 1)], [("U", 1)], 0.634,
-    )
+    # run_case(
+    #     "4 节点汇聚与延伸",
+    #     [
+    #         Node("Q", ["M"], [0, 1], {
+    #             ("M=0",): {0: 0.8, 1: 0.2},
+    #             ("M=1",): {0: 0.1, 1: 0.9},
+    #         }, TypeEnum.NORMAL),
+    #         Node("M", ["U", "V"], [0, 1], {
+    #             ("U=0", "V=0"): {0: 0.95, 1: 0.05},
+    #             ("U=0", "V=1"): {0: 0.6, 1: 0.4},
+    #             ("U=1", "V=0"): {0: 0.5, 1: 0.5},
+    #             ("U=1", "V=1"): {0: 0.1, 1: 0.9},
+    #         }, TypeEnum.NORMAL),
+    #         Node("U", [], [0, 1], {("U",): {0: 0.8, 1: 0.2}}, TypeEnum.ROOT),
+    #         Node("V", [], [0, 1], {("V",): {0: 0.7, 1: 0.3}}, TypeEnum.ROOT),
+    #     ],
+    #     [("U", "M"), ("V", "M"), ("M", "Q")],
+    #     [("Q", 1)], [("U", 1)], 0.634,
+    # )
+
+    # 自条件恒等式：只含一个根节点时，P(X=x | X=x) 必须等于 1。
+    # 这能单独检查“同一节点同时出现在事件和条件中”的处理。
+    for node_id, state in [("C", 0), ("U", 1)]:
+        run_case(
+            f"自条件 {node_id}={state}",
+            [Node(node_id, [], [0, 1], {
+                (node_id,): {0: 0.8, 1: 0.2},
+            }, TypeEnum.ROOT)],
+            [], [(node_id, state)], [(node_id, state)], 1.0,
+        )
